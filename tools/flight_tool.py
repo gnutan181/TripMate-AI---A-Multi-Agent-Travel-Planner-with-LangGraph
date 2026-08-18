@@ -1088,7 +1088,8 @@ def search_flights(
         decision = extract_route_with_llm(
             query
         )
-
+        print(decision,"==============================================")
+        
         # ================================================================
         # 2. ROUTE + IATA VALIDATION
         # ================================================================
@@ -1096,7 +1097,7 @@ def search_flights(
         route = resolve_route(
             decision
         )
-
+        print(route)
         logger.info(
             (
                 "Resolved route: "
