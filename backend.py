@@ -12,7 +12,6 @@ from typing import TypedDict,Annotated,Any
 
 import operator
 import uuid
-import asyncio
 import psycopg
 
 from psycopg.rows import dict_row
@@ -29,9 +28,9 @@ from langchain_core.messages import (
 )
 
 from langchain_groq import ChatGroq
-# from tools.tavily_tool import tavily_search
 from tools.flight_tool import search_flights
-from mcp_client import tavily_mcp_search,aviation_mcp_call,extract_destination,forecast_mcp_search, weather_mcp_search
+from tools.tavily_tool import tavily_search
+from tools.weather_tool import get_current_weather, get_forecast
 import json
 import tiktoken
 
@@ -40,12 +39,6 @@ encoding = tiktoken.get_encoding("cl100k_base")
 def count_tokens(text: str) -> int:
     return len(encoding.encode(text))
 
-# def extract_mcp_json(result):
-#     if isinstance(result, list) and result:
-#         text = result[0].get("text", "")
-#         return json.loads(text)
-
-#     return result
 def get_database_url():
     database_url = os.getenv("DATABASE_URL")
 
@@ -64,12 +57,26 @@ def get_database_url():
 
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MAX_TOKENS = int(os.getenv("GROQ_MAX_TOKENS", "2200"))
+GROQ_REQUEST_TOKEN_BUDGET = int(os.getenv("GROQ_REQUEST_TOKEN_BUDGET", "7200"))
+GROQ_MIN_OUTPUT_TOKENS = 256
 
-llm = ChatGroq(
-    model="openai/gpt-oss-120b",
-    api_key = GROQ_API_KEY,
-    max_tokens=2000
-)
+if GROQ_MAX_TOKENS < GROQ_MIN_OUTPUT_TOKENS:
+    raise ValueError("GROQ_MAX_TOKENS must be at least 256.")
+if GROQ_REQUEST_TOKEN_BUDGET <= GROQ_MAX_TOKENS:
+    raise ValueError("GROQ_REQUEST_TOKEN_BUDGET must exceed GROQ_MAX_TOKENS.")
+
+
+def _create_planner_llm() -> ChatGroq:
+    """Create an LLM whose output cap is calculated for each request."""
+
+    return ChatGroq(
+        model="openai/gpt-oss-120b",
+        api_key=GROQ_API_KEY,
+    )
+
+
+llm = _create_planner_llm()
 
 
 class TravelState(TypedDict):
@@ -119,14 +126,55 @@ AGENT_ORDER =[
 ]
 
 def _llm_text(system_prompt : str, user_prompt : str)->str:
-    response = llm.invoke(
+    response = _invoke_llm(
         [
             SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt)
-
-        ]
+            HumanMessage(content=_compact_text(user_prompt, 4_000)),
+        ],
+        preferred_output_tokens=800,
     )
     return str(response.content)
+
+
+def _compact_text(value: Any, max_tokens: int) -> str:
+    """Keep the beginning and conclusion of long provider/agent results."""
+
+    text = str(value or "").strip()
+    token_ids = encoding.encode(text)
+    if len(token_ids) <= max_tokens:
+        return text
+
+    head_tokens = int(max_tokens * 0.7)
+    tail_tokens = max_tokens - head_tokens
+    return (
+        encoding.decode(token_ids[:head_tokens])
+        + "\n\n[...context shortened to stay within the Groq request limit...]\n\n"
+        + encoding.decode(token_ids[-tail_tokens:])
+    )
+
+
+def _invoke_llm(messages: list[AnyMessage], preferred_output_tokens: int):
+    """Fit a request under the configured Groq TPM guardrail.
+
+    Groq rejects a request when prompt tokens plus requested output tokens exceed
+    the account's request allowance. Binding an explicit output cap prevents the
+    provider default from turning a valid long prompt into a 413 response.
+    """
+
+    prompt_tokens = sum(count_tokens(str(message.content)) + 12 for message in messages)
+    available_output_tokens = GROQ_REQUEST_TOKEN_BUDGET - prompt_tokens
+    output_tokens = min(
+        GROQ_MAX_TOKENS,
+        preferred_output_tokens,
+        available_output_tokens,
+    )
+    if output_tokens < GROQ_MIN_OUTPUT_TOKENS:
+        raise ValueError(
+            "The request is too large even after context compaction. "
+            "Reduce the input size or increase GROQ_REQUEST_TOKEN_BUDGET."
+        )
+
+    return llm.bind(max_tokens=output_tokens).invoke(messages)
 
 
 def _json_from_llm(text:str) -> dict[str, Any]:
@@ -302,103 +350,13 @@ def guardrail_blocked_agent(state: TravelState):
             
     
 # =====================================
-# Flight Agent with avaition stack api
-# ======================================
-
-# def flight_agent(state: TravelState):
-#     query =state["user_query"]
-#     flight_data = search_flights(query)
-
-#     return {
-#         "flight_results":flight_data,
-#         "messages":[
-#             AIMessage(content="Flight results fetched")
-#         ],
-#         "llm_calls" :state.get("llm_calls",0) +1
-#     }    
-
-
-
-# Flight Tool Router Prompt
-FLIGHT_AGENT_PROMPT = """
-You are a travel flight expert.
-
-User Query:
-{query}
-
-Airport Information:
-{airport_data}
-
-Airline Information:
-{airline_data}
-
-Generate:
-
-1. Likely departure airport
-2. Likely arrival airport
-3. Airlines serving this route
-4. Typical flight duration
-5. Estimated airfare range
-6. Peak season pricing warning
-7. Booking advice
-
-Return concise travel guidance.
-"""
-
-# =====================================
 # Flight Agent
 # =====================================
 
 def flight_agent(state: TravelState):
-    print("\nINSIDE FLIGHT AGENT\n")
-
-    query = state["user_query"]
-
-    try:
-
-        
-        airports = asyncio.run(
-            aviation_mcp_call("list_airports"))
-
-        # airports_json = extract_mcp_json(airports_raw)
-        # query_lower = query.lower()
-
-        # airports = [
-        # airport
-        #     for airport in airports_json
-        #     if (
-        #         query_lower in str(airport.get("airport_name", "")).lower()
-        #         or query_lower in str(airport.get("city_iata_code", "")).lower()
-        #         or query_lower in str(airport.get("iata_code", "")).lower()
-        #     )
-        # ]
-        
-        airlines = asyncio.run(
-                    aviation_mcp_call("list_airports"))
-        
-        # airlines_json = extract_mcp_json(airports_raw)
-
-        print("\nAIRPORTS:", airports)
-        print("\nAIRLINES:", airlines)
-
-        prompt = FLIGHT_AGENT_PROMPT.format(
-            query=query,
-            airport_data=str(airports)[:1000],
-            airline_data=str(airlines)[:1000]
-        )
-
-        response = llm.invoke([
-            SystemMessage(
-                content="You are an expert travel flight planner."
-            ),
-            HumanMessage(content=prompt)
-        ])
-
-        flight_data = response.content
-        
-    except Exception as e:
-
-        flight_data = f"Flight information unavailable: {str(e)}"
+    # Calls AviationStack directly. The tool applies bounded retries and returns
+    # a user-safe fallback if the provider cannot be reached.
+    flight_data = search_flights(state["user_query"])
 
     return {
         "flight_results": flight_data,
@@ -416,9 +374,7 @@ def flight_agent(state: TravelState):
 # ======================================
 def hotel_agent(state:TravelState):
     query = f"Best hotels for {state['user_query']}"
-
-    # hotel_results = tavily_search(query)
-    hotel_results = asyncio.run(tavily_mcp_search(query))
+    hotel_results = tavily_search(query)
 
 
     return {
@@ -433,14 +389,46 @@ def hotel_agent(state:TravelState):
 # Weather Agent
 # ======================================
 
+def _weather_destination(state: TravelState) -> str:
+    """Use supervisor output first, then make a best-effort LLM extraction."""
+
+    destination = str(
+        state.get("trip_constraints", {}).get("destination") or ""
+    ).strip()
+    if destination:
+        return destination
+
+    try:
+        destination = _llm_text(
+            "Extract a destination for a weather lookup. Return only a city or country name.",
+            state["user_query"],
+        ).strip()
+        return destination.splitlines()[0].strip(" .")
+    except Exception:
+        return ""
+
+
 def weather_agent(state: TravelState):
-    city = extract_destination(state["user_query"])
-    weather_data = asyncio.run(
-        weather_mcp_search(city)
-    )
-    forecast_data = asyncio.run(
-        forecast_mcp_search(city)
-    )
+    city = _weather_destination(state)
+
+    # Avoid calling OpenWeather with the full user request when the supervisor
+    # cannot determine a destination.
+    if not city:
+        unavailable = "Weather information is unavailable because no destination was identified."
+        return {
+            "weather_results": unavailable,
+            "messages": [AIMessage(content="Weather lookup skipped: destination missing")],
+        }
+
+    try:
+        weather_data = get_current_weather(city)
+    except Exception:
+        weather_data = "Current weather is temporarily unavailable after retrying."
+
+    try:
+        forecast_data = get_forecast(city)
+    except Exception:
+        forecast_data = "Forecast is temporarily unavailable after retrying."
 
     return {
         "weather_results" : f"""
@@ -462,23 +450,27 @@ def weather_agent(state: TravelState):
 # Budget Agent - new specialist
 # =========================
 def budget_agent(state: TravelState):
+    user_query = _compact_text(state["user_query"], 500)
+    flight_results = _compact_text(state.get("flight_results", ""), 700)
+    hotel_results = _compact_text(state.get("hotel_results", ""), 700)
+    weather_results = _compact_text(state.get("weather_results", ""), 350)
     prompt = f"""
 Analyze whether this trip is realistic for the user's budget.
 
 User Query:
-{state['user_query']}
+{user_query}
 
 Trip Constraints:
 {state.get('trip_constraints', {})}
 
 Flight Results:
-{state.get('flight_results', '')}
+{flight_results}
 
 Hotel Results:
-{state.get('hotel_results', '')}
+{hotel_results}
 
 Weather Results:
-{state.get('weather_results', '')}
+{weather_results}
 
 Return:
 1. Estimated cost categories
@@ -489,11 +481,12 @@ Return:
 If exact live prices are unavailable, clearly label estimates as approximate.
 """
 
-    response = llm.invoke(
+    response = _invoke_llm(
         [
             SystemMessage(content="You are a practical travel budget analyst."),
             HumanMessage(content=prompt),
-        ]
+        ],
+        preferred_output_tokens=1_200,
     )
 
     return {
@@ -508,31 +501,31 @@ If exact live prices are unavailable, clearly label estimates as approximate.
 # ======================================
 
 def itinerary_agent(state : TravelState):
+    user_query = _compact_text(state["user_query"], 550)
+    flight_results = _compact_text(state.get("flight_results", ""), 850)
+    hotel_results = _compact_text(state.get("hotel_results", ""), 850)
+    weather_results = _compact_text(state.get("weather_results", ""), 400)
     prompt =f"""
 Create a complete travel itinerary.
 
 User Query:
-{state['user_query']}
+{user_query}
 
 Flight Results:
-{state['flight_results']}
+{flight_results}
 
 Hotel Results:
-{state['hotel_results']}
+{hotel_results}
 
 Weather Results:
-{state['weather_results']}
+{weather_results}
 
 Make the itinerary practical, budget-aware, and easy to follow.
 """
-    print("User:", count_tokens(state["user_query"]))
-    print("Flights:", count_tokens(str(state["flight_results"])))
-    print("Hotels:", count_tokens(str(state["hotel_results"])))
-    print("Total:", count_tokens(prompt))
-    response = llm.invoke([
+    response = _invoke_llm([
         SystemMessage(content = "You are an expert travel planner."),
         HumanMessage(content=prompt)
-    ])
+    ], preferred_output_tokens=2_000)
 
     return {
         "itinerary":response.content,
@@ -589,28 +582,28 @@ The user requested a revision. Apply this feedback carefully:
 Generate the final travel response for the user.
 
 Human Review:
-{review_instruction}
+{_compact_text(review_instruction, 200)}
 
 User Request:
-{state['user_query']}
+{_compact_text(state['user_query'], 450)}
 
 Supervisor Constraints:
-{state.get('trip_constraints', {})}
+{_compact_text(state.get('trip_constraints', {}), 250)}
 
 Flights:
-{state.get('flight_results', '')}
+{_compact_text(state.get('flight_results', ''), 650)}
 
 Hotels:
-{state.get('hotel_results', '')}
+{_compact_text(state.get('hotel_results', ''), 650)}
 
 Weather:
-{state.get('weather_results', '')}
+{_compact_text(state.get('weather_results', ''), 350)}
 
 Budget Analysis:
-{state.get('budget_results', '')}
+{_compact_text(state.get('budget_results', ''), 550)}
 
 Draft Itinerary:
-{state.get('itinerary', '')}
+{_compact_text(state.get('itinerary', ''), 1_400)}
 
 Format the final answer beautifully using these sections:
 1. Trip Summary
@@ -627,15 +620,18 @@ Important:
 - Include weather-based travel advice.
 - Keep the response useful for real travel planning.
 - Incorporate the human feedback when revision was requested.
+- Do not omit a required section. Include all useful concrete details from the
+  specialist results; use "unavailable" only when that specialist has none.
 """
 
-    response = llm.invoke(
+    response = _invoke_llm(
         [
             SystemMessage(
                 content="You are a professional AI travel booking assistant."
             ),
             HumanMessage(content=final_prompt),
-        ]
+        ],
+        preferred_output_tokens=2_200,
     )
 
     return {
