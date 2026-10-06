@@ -99,6 +99,9 @@ environment can run on any machine with its environment variables configured.
 
 ## Production behavior
 
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the historical MCP failure diagnosis,
+credential rotation, Linux verification commands, and exact Render settings.
+
 Each third-party HTTP request has a 15–20 second timeout and up to three
 retries for connection failures, timeouts, rate limiting, and temporary server
 errors. If a provider still cannot respond, TripMate returns a clear partial
