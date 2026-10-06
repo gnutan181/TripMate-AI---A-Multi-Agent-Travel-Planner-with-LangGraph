@@ -15,8 +15,10 @@ all coordinated through a LangGraph workflow.
 
 ## Features
 
-- ✈️ Flight research using AviationStack
-- 🏨 Hotel suggestions using Tavily search
+- ✈️ Live flight research using the AviationStack REST API
+- 🌦️ Current weather and forecasts using the OpenWeather REST API
+- 🏨 Hotel suggestions using the Tavily REST API
+- 🔁 Bounded retries with graceful provider fallbacks
 - 🧠 Multi-agent orchestration with LangGraph
 - 📝 Structured travel itinerary generation
 - 🌐 FastAPI backend with a simple web interface
@@ -34,6 +36,7 @@ all coordinated through a LangGraph workflow.
 - PostgreSQL
 - Tavily API
 - AviationStack API
+- OpenWeather API
 
 ## Project Structure
 
@@ -65,8 +68,12 @@ Create a .env file in the project root with the following variables:
 ```env
 DATABASE_URL=postgresql://user:password@localhost:5432/travel_db
 GROQ_API_KEY=your_groq_api_key
+# Keep prompt + output below the 8,000 TPM on-demand limit.
+GROQ_MAX_TOKENS=2200
+GROQ_REQUEST_TOKEN_BUDGET=7200
 AVIATIONSTACK_API_KEY=your_aviationstack_api_key
 TAVILY_API_KEY=your_tavily_api_key
+OPENWEATHER_API_KEY=your_openweather_api_key
 DEFAULT_ORIGIN_IATA=DAC
 ```
 
@@ -85,6 +92,27 @@ Start the FastAPI server:
 ```bash
 python app.py
 ```
+
+No MCP server, `uvx`, or local sidecar process is required. The application
+calls the provider HTTPS APIs directly, so the same container or virtual
+environment can run on any machine with its environment variables configured.
+
+## Production behavior
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the historical MCP failure diagnosis,
+credential rotation, Linux verification commands, and exact Render settings.
+
+Each third-party HTTP request has a 15–20 second timeout and up to three
+retries for connection failures, timeouts, rate limiting, and temporary server
+errors. If a provider still cannot respond, TripMate returns a clear partial
+result instead of failing the entire travel plan.
+
+Groq evaluates prompt tokens plus requested completion tokens together. The
+planner keeps each request under `GROQ_REQUEST_TOKEN_BUDGET` (7,200 by default,
+leaving headroom below the 8,000 on-demand TPM limit), compacts oversized
+specialist results, and dynamically lowers the output budget when necessary.
+`GROQ_MAX_TOKENS` controls the preferred final-answer size (2,200 by default).
+Raise either value only when the deployed Groq tier supports it.
 
 Then open your browser at:
 

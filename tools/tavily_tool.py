@@ -1,31 +1,52 @@
-# ||||||||||| This is code is not used because we have used the mcp server for tavily |||||||
+"""Direct Tavily API integration with bounded retries and a safe fallback."""
+
+from __future__ import annotations
+
+import os
+
+from dotenv import load_dotenv
+
+from tools.http_client import ExternalAPIError, get_json
 
 
-# from tavily import TavilyClient
-# import os 
-# from dotenv import load_dotenv
-# load_dotenv()
+load_dotenv()
 
-# client = TavilyClient(
-#     api_key=os.getenv("TAVILY_API_KEY")
-# )
-
-# # response  = client()
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 
 
-# def tavily_search(query):
-#     response = client.search(query=query,max_results=5)
-#     result = []
+def tavily_search(query: str, max_results: int = 5) -> str:
+    """Return concise web-search results without depending on an MCP gateway."""
 
-#     for i, r in enumerate(response["results"],1):
-#         title = r.get("title","Unknown")
-#         url = r.get("url","")
-#         snippet = r.get("content","").strip()
+    if not TAVILY_API_KEY:
+        return "Hotel web research is unavailable because TAVILY_API_KEY is not configured."
 
-#         if len(snippet) > 300 :
-#             snippet =snippet[:300].rsplit(" ",1)[0] + "..."
+    try:
+        data = get_json(
+            TAVILY_SEARCH_URL,
+            method="POST",
+            json={
+                "api_key": TAVILY_API_KEY,
+                "query": query,
+                "max_results": max(1, min(max_results, 10)),
+                "search_depth": "basic",
+            },
+        )
+    except ExternalAPIError:
+        return "Hotel web research is temporarily unavailable. Please verify options with a booking provider."
 
-#         result.append(f"{1}. **{title}**\n {url}\n {snippet}")
+    results = data.get("results") or []
+    if not results:
+        return "No hotel research results were returned. Please verify options with a booking provider."
 
-#     return "\n\n".join(result)
+    formatted = []
+    for index, result in enumerate(results, start=1):
+        title = str(result.get("title") or "Untitled result")
+        url = str(result.get("url") or "")
+        snippet = str(result.get("content") or "").strip()
+        if len(snippet) > 300:
+            snippet = snippet[:300].rsplit(" ", 1)[0] + "..."
+        formatted.append(f"{index}. {title}\n{url}\n{snippet}")
+
+    return "\n\n".join(formatted)
 

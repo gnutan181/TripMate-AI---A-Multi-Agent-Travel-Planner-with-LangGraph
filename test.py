@@ -23,29 +23,11 @@
 
 
 
-# ||||||||||||||||||||||||||||| tavliy mcp test ||||||||||||||||||||
-
-# import asyncio
-
-# from mcp_client_test import get_all_tools, tavily_mcp_search
-
-# if __name__ == "__main__":
-
-#     query = "latest news about AI"
-#     # asyncio.run(get_all_tools())
-#     res = asyncio.run(tavily_mcp_search(query))
-#     print("res",res)
-
-
-
-# ||||||||||||||||||||||||||||| Aviation mcp test ||||||||||||||||||||
-
-import asyncio
-
-from mcp_client import get_all_tools
-
 if __name__ == "__main__":
-    asyncio.run(get_all_tools())
-    print()
+    from tools.tavily_tool import tavily_search
+    from tools.weather_tool import get_current_weather
+
+    print(tavily_search("Best hotels in Tokyo"))
+    print(get_current_weather("Tokyo"))
 
 

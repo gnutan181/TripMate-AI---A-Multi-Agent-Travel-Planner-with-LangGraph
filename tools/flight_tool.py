@@ -28,10 +28,10 @@ from typing import Optional
 
 import airportsdata
 import certifi
-import requests
 from dotenv import load_dotenv
 from groq import Groq
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from tools.http_client import ExternalAPIError, get_json
 
 
 # ============================================================================
@@ -49,8 +49,9 @@ os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
 # CONFIGURATION
 # ============================================================================
 
-AVIATIONSTACK_API_KEY = os.getenv(
-    "AVIATIONSTACK_API_KEY"
+AVIATIONSTACK_API_KEY = (
+    os.getenv("AVIATIONSTACK_API_KEY")
+    or os.getenv("AVIATION_STACK_API_KEY")
 )
 
 GROQ_API_KEY = os.getenv(
@@ -71,8 +72,6 @@ DEFAULT_ORIGIN_IATA = os.getenv(
 AVIATIONSTACK_URL = (
     "https://api.aviationstack.com/v1/flights"
 )
-
-REQUEST_TIMEOUT = 30
 
 DEFAULT_LIMIT = 10
 
@@ -841,43 +840,15 @@ def fetch_flights(
     )
 
     try:
-
-        response = requests.get(
+        data = get_json(
             AVIATIONSTACK_URL,
             params=params,
-            timeout=REQUEST_TIMEOUT,
+            timeout=20,
         )
-
-        response.raise_for_status()
-
-    except requests.exceptions.Timeout as exc:
-
-        logger.exception(
-            "AviationStack request timed out."
-        )
-
+    except ExternalAPIError as exc:
+        logger.warning("AviationStack is unavailable after retries: %s", exc)
         raise RuntimeError(
-            "Flight API request timed out."
-        ) from exc
-
-    except requests.exceptions.RequestException as exc:
-
-        logger.exception(
-            "AviationStack request failed."
-        )
-
-        raise RuntimeError(
-            f"Flight API request failed: {exc}"
-        ) from exc
-
-    try:
-
-        data = response.json()
-
-    except ValueError as exc:
-
-        raise RuntimeError(
-            "AviationStack returned invalid JSON."
+            "Live flight information is temporarily unavailable. Please try again shortly."
         ) from exc
 
     # AviationStack can return an error object
@@ -898,11 +869,9 @@ def fetch_flights(
             "Unknown AviationStack error.",
         )
 
+        logger.warning("AviationStack API error [%s]: %s", code, message)
         raise RuntimeError(
-            (
-                "AviationStack error "
-                f"[{code}]: {message}"
-            )
+            "Live flight information is temporarily unavailable. Please try again shortly."
         )
 
     return data.get(
