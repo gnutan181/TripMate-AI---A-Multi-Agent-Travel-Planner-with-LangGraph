@@ -1,4 +1,7 @@
 import os 
+from tools.secure_logging import install_log_redaction, redact
+
+install_log_redaction()
 import certifi
 from dotenv import load_dotenv
 
@@ -240,7 +243,7 @@ User request:
         guardrail_reason = str(guardrail_result.get("reason", "")).strip()
         llm_calls += 1
     except Exception as exc:
-        print(f"Guardrail fallback used: {exc}")
+        print(redact(f"Guardrail fallback used: {exc}"))
         allowed = True
         guardrail_reason = "Guardrail validation fallback allowed the request."
 
@@ -314,7 +317,7 @@ User request:
         reasoning = str(parsed.get("reasoning", "")).strip()
         llm_calls += 1
     except Exception as exc:
-        print(f"Supervisor fallback used: {exc}")
+        print(redact(f"Supervisor fallback used: {exc}"))
         # Original workflow behavior is preserved as the fallback.
         selected_agents = AGENT_ORDER.copy()
         constraints = _empty_constraints()

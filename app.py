@@ -1,5 +1,11 @@
 from pathlib import Path
-import traceback
+import logging
+
+from tools.secure_logging import install_log_redaction, redact
+from deployment_checks import DeploymentConfigurationError
+
+install_log_redaction()
+logger = logging.getLogger(__name__)
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -76,15 +82,19 @@ async def travel_planner(request_data: TravelRequest):
             }
         )
 
-    except Exception as exc:
-        print("ERROR:", exc)
-        traceback.print_exc()
+    except DeploymentConfigurationError as exc:
+        logger.error("Deployment configuration error: %s", exc)
+        return JSONResponse(status_code=503, content={
+            "success": False, "error": redact(exc), "code": "deployment_configuration_error",
+        })
+    except Exception:
+        logger.exception("Travel planning failed")
 
         return JSONResponse(
             status_code=500,
             content={
                 "success": False,
-                "error": str(exc),
+                "error": "Travel planning failed. Check the server logs for details.",
             },
         )
 
@@ -114,15 +124,14 @@ async def approve_travel_plan(request_data: ApprovalRequest):
             }
         )
 
-    except Exception as exc:
-        print("APPROVAL ERROR:", exc)
-        traceback.print_exc()
+    except Exception:
+        logger.exception("Travel approval failed")
 
         return JSONResponse(
             status_code=500,
             content={
                 "success": False,
-                "error": str(exc),
+                "error": "Travel approval failed. Check the server logs for details.",
             },
         )
 

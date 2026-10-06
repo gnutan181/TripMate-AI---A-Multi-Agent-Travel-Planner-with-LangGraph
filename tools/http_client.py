@@ -7,6 +7,9 @@ from typing import Any
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from tools.secure_logging import install_log_redaction
+
+install_log_redaction()
 
 
 DEFAULT_TIMEOUT_SECONDS = 15
